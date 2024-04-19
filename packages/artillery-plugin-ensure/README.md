@@ -51,22 +51,24 @@ config:
   ensure:
     thresholdPerEndpointEnabled: true
 scenarios:
-  - flow:
+  - name: 'root'
+    thresholds:
+      - engine.http.response_time.p95: 1000
+    flow:
       - get:
-          name: "root"
-          thresholds:
-            - engine.http.response_time.p95: 1000
           url: "/"
+  - name: 'docs'
+    thresholds:
+      - engine.http.response_time.p95: 1500
+    flow:
       - get:
-          name: "docs"
-          thresholds:
-            - engine.http.response_time.p95: 2000
           url: "/docs"
+  - name: 'integration'
+    thresholds:
+      - engine.http.response_time.p95: 2000
+    flow:
       - get:
-          name: "int"
-          thresholds:
-            - engine.http.response_time.p95: 1500
-          url: "/integrations"
+          url: "/integration"
 ```
 
 ## License
