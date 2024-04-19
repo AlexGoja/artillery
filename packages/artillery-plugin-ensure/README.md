@@ -38,6 +38,36 @@ scenarios:
       - get:
           url: "/integrations"
 ```
+Per scenario threshold:
+
+```yaml
+config:
+  target: "https://www.artillery.io"
+  plugins:
+    ensure: {}
+  phases:
+    - duration: 10
+      arrivalRate: 1
+  ensure:
+    thresholdPerEndpointEnabled: true
+scenarios:
+  - flow:
+      - get:
+          name: "root"
+          thresholds:
+            - engine.http.response_time.p95: 1000
+          url: "/"
+      - get:
+          name: "docs"
+          thresholds:
+            - engine.http.response_time.p95: 2000
+          url: "/docs"
+      - get:
+          name: "int"
+          thresholds:
+            - engine.http.response_time.p95: 1500
+          url: "/integrations"
+```
 
 ## License
 

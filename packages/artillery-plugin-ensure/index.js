@@ -12,12 +12,12 @@ const {
   replaceMetricsWithHashes,
   getHashedVarToValueMap
 } = require('./utils');
+const { uniq, entries } = require('lodash');
 
 class EnsurePlugin {
   constructor(script, events) {
     // If running in Artillery v1, do nothing
     // If running in Artillery v2, we only want to run on the main thread
-
     if (!global.artillery) {
       debug('Running in an unsupported Artillery version, nothing to do');
       return;
@@ -44,8 +44,18 @@ class EnsurePlugin {
     this.script = script;
     this.events = events;
 
+    const scenarios = this.script.scenarios;
     const checks =
       this.script.config?.ensure || this.script.config?.plugins?.ensure;
+    let thresholdPerEndpointEnabled =
+      this.script.config?.ensure['thresholdPerEndpointEnabled'];
+    if (
+      thresholdPerEndpointEnabled !== undefined &&
+      typeof thresholdPerEndpointEnabled === 'boolean'
+    ) {
+      thresholdPerEndpointEnabled =
+        this.script.config?.ensure['thresholdPerEndpointEnabled'];
+    } else thresholdPerEndpointEnabled = false;
 
     global.artillery.ext({
       ext: 'beforeExit',
@@ -65,26 +75,52 @@ class EnsurePlugin {
         );
         debug({ vars });
 
-        const checkTests = EnsurePlugin.runChecks(checks, vars);
+        let checkTests = undefined;
+        if (thresholdPerEndpointEnabled) {
+          checkTests = EnsurePlugin.runPerEndpointChecks(
+            checks,
+            vars,
+            scenarios
+          );
+        } else {
+          checkTests = EnsurePlugin.runChecks(checks, vars);
+        }
 
         global.artillery.globalEvents.emit('checks', checkTests);
 
-        checkTests
-          .sort((a, b) => (a.result < b.result ? 1 : -1))
-          .forEach((check) => {
-            if (check.result !== 1) {
-              global.artillery.log(
-                `${chalk.red('fail')}: ${check.original}${
-                  check.strict ? '' : ' (optional)'
-                }`
-              );
-              if (check.strict) {
-                global.artillery.suggestedExitCode = 1;
-              }
-            } else {
-              global.artillery.log(`${chalk.green('ok')}: ${check.original}`);
+        function groupBy(arr, property) {
+          return arr.reduce(function (memo, x) {
+            if (!memo[x[property]]) {
+              memo[x[property]] = [];
             }
-          });
+            memo[x[property]].push(x);
+            return memo;
+          }, {});
+        }
+
+        const grouped = groupBy(checkTests, 'scenario');
+
+        Object.entries(grouped).map(([scenario, array]) => {
+          scenario !== undefined
+            ? global.artillery.log(`Scenario: ${scenario}`)
+            : global.artillery.log('Scenario: Global');
+          array
+            .sort((a, b) => (a.result < b.result ? 1 : -1))
+            .forEach((check) => {
+              if (check.result !== 1) {
+                global.artillery.log(
+                  `${chalk.red('fail')}: ${check.original}${
+                    check.strict ? '' : ' (optional)'
+                  }`
+                );
+                if (check.strict) {
+                  global.artillery.suggestedExitCode = 1;
+                }
+              } else {
+                global.artillery.log(`${chalk.green('ok')}: ${check.original}`);
+              }
+            });
+        });
       }
     });
   }
@@ -119,6 +155,83 @@ class EnsurePlugin {
     return vars;
   }
 
+  static runPerEndpointChecks(checks, vars, scenarios) {
+    const LEGACY_CONDITIONS = ['min', 'max', 'median', 'p95', 'p99'];
+    const checkTests = [];
+
+    if (Array.isArray(scenarios)) {
+      scenarios.forEach((scenario) => {
+        if (typeof scenario === 'object') {
+          if (Array.isArray(scenario.thresholds)) {
+            scenario.thresholds.forEach((threshold) => {
+              if (typeof threshold === 'object') {
+                EnsurePlugin.generateHashedExpression(
+                  threshold,
+                  vars,
+                  checkTests,
+                  scenario.name
+                );
+              }
+            });
+          }
+
+          if (Array.isArray(checks.conditions)) {
+            EnsurePlugin.generateConditionsCheks(
+              checks,
+              vars,
+              checkTests,
+              scenario.name
+            );
+          }
+
+          EnsurePlugin.legacyChecks(
+            checks,
+            LEGACY_CONDITIONS,
+            vars,
+            checkTests,
+            scenario.name
+          );
+
+          const hashedVarsMap = getHashedVarToValueMap(vars);
+
+          checkTests.forEach((check) => {
+            const result = check.f(hashedVarsMap);
+            check.result = result;
+            debug(`check ${check.original} -> ${result}`);
+          });
+        }
+      });
+    }
+
+    if (checkTests.length > 0) {
+      global.artillery.log('\nChecks:');
+    }
+    return checkTests;
+  }
+
+  static generateHashedExpression(threshold, vars, checkTests, scenario) {
+    const metricName = Object.keys(threshold)[0]; // only one metric check per array entry
+    const maxValue = threshold[metricName];
+    const expr = `${metricName} < ${maxValue}`;
+
+    const hashedExpression = replaceMetricsWithHashes(Object.keys(vars), expr);
+    let f = () => {};
+    try {
+      f = filtrex(hashedExpression);
+    } catch (err) {
+      global.artillery.log(err);
+    }
+
+    // all threshold checks are strict:
+    checkTests.push({
+      scenario: scenario,
+      f,
+      strict: true,
+      original: expr,
+      hashed: hashedExpression
+    });
+  }
+
   static runChecks(checks, vars) {
     const LEGACY_CONDITIONS = ['min', 'max', 'median', 'p95', 'p99'];
     const checkTests = [];
@@ -126,60 +239,67 @@ class EnsurePlugin {
     if (Array.isArray(checks.thresholds)) {
       checks.thresholds.forEach((o) => {
         if (typeof o === 'object') {
-          const metricName = Object.keys(o)[0]; // only one metric check per array entry
-          const maxValue = o[metricName];
-          const expr = `${metricName} < ${maxValue}`;
-
-          const hashedExpression = replaceMetricsWithHashes(
-            Object.keys(vars),
-            expr
-          );
-          let f = () => {};
-          try {
-            f = filtrex(hashedExpression);
-          } catch (err) {
-            global.artillery.log(err);
-          }
-
-          // all threshold checks are strict:
-          checkTests.push({
-            f,
-            strict: true,
-            original: expr,
-            hashed: hashedExpression
-          });
+          EnsurePlugin.generateHashedExpression(o, vars, checkTests, 'Global');
         }
       });
     }
 
     if (Array.isArray(checks.conditions)) {
-      checks.conditions.forEach((o) => {
-        if (typeof o === 'object') {
-          const expression = o.expression;
-          const strict = typeof o.strict === 'boolean' ? o.strict : true;
-
-          const hashedExpression = replaceMetricsWithHashes(
-            Object.keys(vars),
-            expression
-          );
-
-          let f = () => {};
-          try {
-            f = filtrex(hashedExpression);
-          } catch (err) {
-            global.artillery.log(err);
-          }
-
-          checkTests.push({
-            f,
-            strict,
-            original: expression,
-            hashed: hashedExpression
-          });
-        }
-      });
+      EnsurePlugin.generateConditionsCheks(checks, vars, checkTests, 'Global');
     }
 
+    EnsurePlugin.legacyChecks(
+      checks,
+      LEGACY_CONDITIONS,
+      vars,
+      checkTests,
+      'Global'
+    );
+
+    EnsurePlugin.maxErrorRateCheck(checks, vars, checkTests, 'Global');
+
+    if (checkTests.length > 0) {
+      global.artillery.log('\nChecks:');
+    }
+
+    const hashedVarsMap = getHashedVarToValueMap(vars);
+
+    checkTests.forEach((check) => {
+      const result = check.f(hashedVarsMap);
+      check.result = result;
+      debug(`check ${check.original} -> ${result}`);
+    });
+    return checkTests;
+  }
+
+  static maxErrorRateCheck(checks, vars, checkTests, scenario) {
+    if (typeof checks.maxErrorRate !== 'undefined') {
+      const maxValue = Number(checks.maxErrorRate);
+      const expression = `((vusers.created - vusers.completed)/vusers.created * 100) <= ${maxValue}`;
+
+      const hashedExpression = replaceMetricsWithHashes(
+        Object.keys(vars),
+        expression
+      );
+
+      let f = () => {};
+      try {
+        f = filtrex(hashedExpression);
+      } catch (err) {
+        global.artillery.log(err);
+      }
+
+      checkTests.push({
+        scenario: scenario,
+        f,
+        strict: true,
+        original: `maxErrorRate < ${maxValue}`,
+        hash: hashedExpression
+      });
+    }
+  }
+
+  static legacyChecks(checks, LEGACY_CONDITIONS, vars, checkTests, scenario) {
     Object.keys(checks)
       .filter((k) => LEGACY_CONDITIONS.indexOf(k) > -1)
       .forEach((k) => {
@@ -200,49 +320,42 @@ class EnsurePlugin {
 
         // all legacy threshold checks are strict:
         checkTests.push({
+          scenario: scenario,
           f,
           strict: true,
           original: `${k} < ${maxValue}`,
           hash: hashedExpression
         });
       });
+  }
 
-    if (typeof checks.maxErrorRate !== 'undefined') {
-      const maxValue = Number(checks.maxErrorRate);
-      const expression = `((vusers.created - vusers.completed)/vusers.created * 100) <= ${maxValue}`;
+  static generateConditionsCheks(checks, vars, checkTests, scenario) {
+    checks.conditions.forEach((o) => {
+      if (typeof o === 'object') {
+        const expression = o.expression;
+        const strict = typeof o.strict === 'boolean' ? o.strict : true;
 
-      const hashedExpression = replaceMetricsWithHashes(
-        Object.keys(vars),
-        expression
-      );
+        const hashedExpression = replaceMetricsWithHashes(
+          Object.keys(vars),
+          expression
+        );
 
-      let f = () => {};
-      try {
-        f = filtrex(hashedExpression);
-      } catch (err) {
-        global.artillery.log(err);
+        let f = () => {};
+        try {
+          f = filtrex(hashedExpression);
+        } catch (err) {
+          global.artillery.log(err);
+        }
+
+        checkTests.push({
+          scenario: scenario,
+          f,
+          strict,
+          original: expression,
+          hashed: hashedExpression
+        });
       }
-
-      checkTests.push({
-        f,
-        strict: true,
-        original: `maxErrorRate < ${maxValue}`,
-        hash: hashedExpression
-      });
-    }
-
-    if (checkTests.length > 0) {
-      global.artillery.log('\nChecks:');
-    }
-
-    const hashedVarsMap = getHashedVarToValueMap(vars);
-
-    checkTests.forEach((check) => {
-      const result = check.f(hashedVarsMap);
-      check.result = result;
-      debug(`check ${check.original} -> ${result}`);
     });
-    return checkTests;
   }
 }
 
