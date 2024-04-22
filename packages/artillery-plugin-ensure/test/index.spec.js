@@ -291,11 +291,11 @@ test('checks are grouped in the correct order (ok first, fail after)', async (t)
     await $`../artillery/bin/run run ./test/fixtures/scenario.yml --overrides ${override}`;
   } catch (output) {
     const startIndex = output.stdout.indexOf('Checks:');
-    // Get the relevant logs (the first 4 lines after the Checks: line)
+    // Get the relevant logs (the first 4 lines after the Scenario: line)
     const relevantLogs = output.stdout
       .slice(startIndex)
       .split('\n')
-      .slice(1, 5);
+      .slice(2, 6);
 
     // Assert
     t.equal(output.exitCode, 1, 'CLI Exit Code should be 1');
