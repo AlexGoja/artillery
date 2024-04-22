@@ -47,15 +47,10 @@ class EnsurePlugin {
     const scenarios = this.script.scenarios;
     const checks =
       this.script.config?.ensure || this.script.config?.plugins?.ensure;
-    let thresholdPerEndpointEnabled =
-      this.script.config?.ensure['thresholdPerEndpointEnabled'];
-    if (
-      thresholdPerEndpointEnabled !== undefined &&
-      typeof thresholdPerEndpointEnabled === 'boolean'
-    ) {
-      thresholdPerEndpointEnabled =
-        this.script.config?.ensure['thresholdPerEndpointEnabled'];
-    } else thresholdPerEndpointEnabled = false;
+    let thresholdPerEndpointEnabled = this.script.config?.ensure
+      ?.thresholdPerEndpointEnabled
+      ? this.script.config.ensure.thresholdPerEndpointEnabled
+      : false;
 
     global.artillery.ext({
       ext: 'beforeExit',
@@ -176,7 +171,7 @@ class EnsurePlugin {
           }
 
           if (Array.isArray(checks.conditions)) {
-            EnsurePlugin.generateConditionsCheks(
+            EnsurePlugin.generateConditionsChecks(
               checks,
               vars,
               checkTests,
@@ -245,7 +240,7 @@ class EnsurePlugin {
     }
 
     if (Array.isArray(checks.conditions)) {
-      EnsurePlugin.generateConditionsCheks(checks, vars, checkTests, 'Global');
+      EnsurePlugin.generateConditionsChecks(checks, vars, checkTests, 'Global');
     }
 
     EnsurePlugin.legacyChecks(
@@ -329,7 +324,7 @@ class EnsurePlugin {
       });
   }
 
-  static generateConditionsCheks(checks, vars, checkTests, scenario) {
+  static generateConditionsChecks(checks, vars, checkTests, scenario) {
     checks.conditions.forEach((o) => {
       if (typeof o === 'object') {
         const expression = o.expression;
