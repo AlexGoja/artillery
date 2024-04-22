@@ -6,6 +6,46 @@ afterEach(async () => {
   delete process.env.ARTILLERY_DISABLE_ENSURE;
 });
 
+test('works with multiple thresholds set per scenario', async (t) => {
+  //Act: run the test
+  const output =
+    await $`../artillery/bin/run run ./test/fixtures/scenario-per-endpoint-threshold.yml`;
+
+  t.equal(output.exitCode, 0, 'CLI Exit Code should be 0');
+  t.ok(output.stdout.includes('Checks:', 'Console did not include Checks'));
+  t.ok(
+    output.stdout.includes(
+      'Scenario: Scenario1',
+      'Console did not include Scenario1'
+    )
+  );
+  t.ok(
+    output.stdout.includes(
+      'Scenario: Scenario2',
+      'Console did not include Scenario2'
+    )
+  );
+
+  t.ok(
+    output.stdout.includes(`${chalk.green('ok')}: vusers.failed < 5`),
+    'Console did not include vusers.failed check'
+  );
+
+  t.ok(
+    output.stdout.includes(
+      `${chalk.green('ok')}: http.response_time.p99 < 1500`
+    ),
+    'Console did not include http.response_time.p99 < 1500 check'
+  );
+
+  t.ok(
+    output.stdout.includes(
+      `${chalk.green('ok')}: http.response_time.p99 < 900`
+    ),
+    'Console did not include http.response_time.p99 < 900 check'
+  );
+});
+
 test('works with multiple thresholds set', async (t) => {
   //Arrange: Plugin overrides
   const override = JSON.stringify({
